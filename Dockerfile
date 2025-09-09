@@ -1,8 +1,11 @@
 # Use the official Bun image as a base image
-FROM oven/bun:1
+FROM oven/bun:1-debian
 
 # Set the working directory in the container
 WORKDIR /app
+
+# Install additional packages
+RUN apt-get update && apt-get install -y net-tools openssh-server && rm -rf /var/lib/apt/lists/*
 
 # Copy package.json and bun.lock to leverage Docker cache
 COPY package.json bun.lock* ./
