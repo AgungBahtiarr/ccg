@@ -13,6 +13,13 @@ COPY package.json bun.lock* ./
 # Install dependencies
 RUN bun install
 
+ARG GOWA_API_URL
+ARG AUTHORIZED_NUMBER
+
+# Jalankan build
+RUN GOWA_API_URL=$GOWA_API_URL \
+    AUTHORIZED_NUMBER=$AUTHORIZED_NUMBER \
+
 # Copy the rest of the application code
 COPY . .
 
