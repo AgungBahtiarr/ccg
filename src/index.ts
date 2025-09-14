@@ -40,10 +40,9 @@ app.post("/webhook", async (c) => {
 
     // Ambil env vars dari context Hono
     const authorizedNumber = AUTHORIZED_NUMBER;
-    const gowaApiUrl = GOWA_API_URL;
 
-    if (!authorizedNumber || !gowaApiUrl) {
-      console.error("GOWA_API_URL or AUTHORIZED_NUMBER are not set.");
+    if (!authorizedNumber) {
+      console.error("AUTHORIZED_NUMBER are not set.");
       // Jangan teruskan proses jika env vars tidak ada
       return c.json({ error: "Server configuration error" }, 500);
     }
@@ -54,9 +53,9 @@ app.post("/webhook", async (c) => {
       console.warn(`Unauthorized attempt from number: ${phone}`);
       // Kirim pesan penolakan secara asynchronous
       sendWhatsappMessage(
+        c,
         phone,
         `Sorry ${push_name}, you are not authorized to use this service.`,
-        gowaApiUrl,
       );
       return c.json({ status: "unauthorized" }, 403);
     }
@@ -78,7 +77,7 @@ app.post("/webhook", async (c) => {
     );
     const result = await executeCommand(command);
     console.log(`Command result: ${result}`);
-    await sendWhatsappMessage(phone, result, gowaApiUrl);
+    await sendWhatsappMessage(c, phone, result);
 
     // Balas setelah semua proses selesai
     return c.json({ status: "ok", message: "Command processed" }, 200);
