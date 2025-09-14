@@ -4,7 +4,33 @@ import { Context } from "hono";
 import { sendWhatsappMessage } from "./whatsapp";
 
 // Function to clean ANSI escape sequences and control characters
-function cleanOutput(text: string): string {
+function cleanOutput(
+  text: string,
+  preserveTerminalLook: boolean = false,
+): string {
+  if (preserveTerminalLook) {
+    // For terminal-like display, only remove ANSI escape sequences
+    return (
+      text
+        // Remove ANSI escape sequences
+        .replace(/\x1b\[[0-9;]*[mGKHF]/g, "")
+        // Remove ANSI color codes
+        .replace(/\x1b\[[0-9;]*m/g, "")
+        // Remove terminal control sequences
+        .replace(/\x1b\[\?[0-9]+[hl]/g, "")
+        // Remove OSC sequences (like window title changes)
+        .replace(/\x1b\][0-9;]*.*?\x07/g, "")
+        .replace(/\x1b\][0-9;]*.*?\x1b\\/g, "")
+        // Remove bracketed paste mode sequences
+        .replace(/\x1b\[\?2004[hl]/g, "")
+        // Clean up multiple newlines
+        .replace(/\n{3,}/g, "\n\n")
+        // Remove trailing whitespace from lines
+        .replace(/[ \t]+$/gm, "")
+        .trim()
+    );
+  }
+
   let cleaned = text
     // Remove ANSI escape sequences
     .replace(/\x1b\[[0-9;]*[mGKHF]/g, "")
@@ -20,75 +46,50 @@ function cleanOutput(text: string): string {
     // Remove bracketed paste mode sequences
     .replace(/\x1b\[\?2004[hl]/g, "");
 
-  // Remove SSH login messages and warnings (but keep error messages)
-  const linesToRemove = [
-    /Warning: Permanently added .* to the list of known hosts\./,
-    /Linux .* x86_64/,
-    /The programs included with the .* system are free software;/,
-    /the exact distribution terms .* described in the/,
-    /individual files in \/usr\/share\/doc\/\*\/copyright\./,
-    /.*GNU\/Linux comes with ABSOLUTELY NO WARRANTY.*/,
-    /permitted by applicable law\./,
-    /Last login: .* from .*/,
-  ];
+  // Only remove SSH login spam for SSH commands
+  const shouldCleanSSH = text.includes("Warning: Permanently added");
 
-  const lines = cleaned.split("\n");
-  const filteredLines = lines.filter((line) => {
-    const trimmedLine = line.trim();
-    if (!trimmedLine) return false;
-    // Keep important error messages even if they match some patterns
-    if (
-      trimmedLine.includes("Permission denied") ||
-      trimmedLine.includes("Access denied") ||
-      trimmedLine.includes("Authentication failed") ||
-      trimmedLine.includes("Connection refused") ||
-      trimmedLine.includes("Connection timed out") ||
-      trimmedLine.includes("Host key verification failed")
-    ) {
-      return true;
-    }
-    return !linesToRemove.some((regex) => regex.test(trimmedLine));
-  });
+  if (shouldCleanSSH) {
+    const linesToRemove = [
+      /Warning: Permanently added .* to the list of known hosts\./,
+      /Linux .* x86_64/,
+      /The programs included with the .* system are free software;/,
+      /the exact distribution terms .* described in the/,
+      /individual files in \/usr\/share\/doc\/\*\/copyright\./,
+      /.*GNU\/Linux comes with ABSOLUTELY NO WARRANTY.*/,
+      /permitted by applicable law\./,
+      /Last login: .* from .*/,
+    ];
 
-  cleaned = filteredLines
-    .join("\n")
-    // Clean bash prompt artifacts
+    const lines = cleaned.split("\n");
+    const filteredLines = lines.filter((line) => {
+      const trimmedLine = line.trim();
+      if (!trimmedLine) return false;
+      // Keep important error messages even if they match some patterns
+      if (
+        trimmedLine.includes("Permission denied") ||
+        trimmedLine.includes("Access denied") ||
+        trimmedLine.includes("Authentication failed") ||
+        trimmedLine.includes("Connection refused") ||
+        trimmedLine.includes("Connection timed out") ||
+        trimmedLine.includes("Host key verification failed")
+      ) {
+        return true;
+      }
+      return !linesToRemove.some((regex) => regex.test(trimmedLine));
+    });
+
+    cleaned = filteredLines.join("\n");
+  }
+
+  cleaned = cleaned
+    // Clean bash prompt artifacts only for SSH
     .replace(/\][0-9;]*;.*?@.*?:[^$]*\$ /g, "$ ")
-    // Remove common bash prompt sequences but keep the last one
-    .replace(/.*@.*?:\~?\$ (?!.*@.*?:\~?\$)/g, "$ ")
-    .replace(/.*@.*?:[^$]*\$ (?!.*@.*?:[^$]*\$)/g, "$ ")
     // Clean up multiple newlines
     .replace(/\n{3,}/g, "\n\n")
     // Remove trailing whitespace from lines
     .replace(/[ \t]+$/gm, "")
     .trim();
-
-  // If output is mostly SSH login stuff, return empty to avoid spam
-  // BUT preserve error messages
-  const importantLines = cleaned
-    .split("\n")
-    .filter(
-      (line) =>
-        line.trim() &&
-        !line.includes("$ ") &&
-        !line.match(/.*@.*?:[^$]*\$/) &&
-        !(
-          line.includes("Permission denied") ||
-          line.includes("Access denied") ||
-          line.includes("Authentication failed")
-        ),
-    );
-
-  const hasErrors =
-    cleaned.includes("Permission denied") ||
-    cleaned.includes("Access denied") ||
-    cleaned.includes("Authentication failed") ||
-    cleaned.includes("Connection refused") ||
-    cleaned.includes("Connection timed out");
-
-  if (importantLines.length === 0 && cleaned.includes("$ ") && !hasErrors) {
-    return "$ "; // Just show prompt if no errors
-  }
 
   return cleaned;
 }
@@ -121,7 +122,6 @@ const INTERACTIVE_COMMANDS = [
   "ftp",
   "sftp",
   "telnet",
-  "ping", // for continuous ping
   "apt",
   "apt-get",
   "yum",
@@ -132,6 +132,16 @@ const INTERACTIVE_COMMANDS = [
   "pip",
   "npm",
   "yarn",
+];
+
+// Commands that produce continuous output but don't need input
+const CONTINUOUS_COMMANDS = [
+  "ping",
+  "top",
+  "htop",
+  "watch",
+  "tail -f",
+  "journalctl -f",
 ];
 
 export async function executeCommand(
@@ -179,8 +189,15 @@ export async function executeCommand(
     command.trim().toLowerCase().startsWith(cmd.toLowerCase()),
   );
 
+  // Check if this is a continuous command
+  const isContinuousCommand = CONTINUOUS_COMMANDS.some((cmd) =>
+    command.trim().toLowerCase().startsWith(cmd.toLowerCase()),
+  );
+
   if (isInteractiveCommand) {
     return await executeInteractiveCommand(command, phone, c);
+  } else if (isContinuousCommand) {
+    return await executeContinuousCommand(command, phone, c);
   } else {
     return await executeNonInteractiveCommand(command);
   }
@@ -298,7 +315,7 @@ export async function executeInteractiveCommand(
             }, 1000);
           }
 
-          const cleanedOutput = cleanOutput(output);
+          const cleanedOutput = cleanOutput(output, true);
           const errorMessage = `❌ **SSH Authentication Failed**\n\n🔐 **Issue**: Wrong password or username (${attempts} failed attempts)\n\n💡 **Solutions**:\n- Double-check username: \`${command.split("@")[0].replace("ssh ", "")}\`\n- Verify password is correct\n- Ensure user exists on target system\n- Try: \`!ssh -v ${command.split(" ").slice(1).join(" ")}\` for verbose output\n\n📋 **Details**:\n\`\`\`\n${cleanedOutput}\n\`\`\``;
 
           // Immediately send message to WhatsApp
@@ -320,7 +337,7 @@ export async function executeInteractiveCommand(
         !chunk.includes("Permission denied")
       ) {
         sessionManager.setWaitingForInput(sessionId, true);
-        const cleanedChunk = cleanOutput(output);
+        const cleanedChunk = cleanOutput(output, true);
         const message = `🔐 **SSH Password Required**\n\nCommand: \`${command}\`\n\nOutput:\n\`\`\`\n${cleanedChunk}\n\`\`\`\n\n💬 Please send your password now.\n\n⚡ Commands:\n• \`exit\` - End session`;
         if (sessionManager.shouldSendMessage(phone, cleanedChunk)) {
           sendWhatsappMessage(c, phone, message);
@@ -372,7 +389,7 @@ export async function executeInteractiveCommand(
       console.log(`Resolved status: ${resolved}`);
       sessionManager.endSession(phone);
 
-      const cleanedOutput = cleanOutput(output);
+      const cleanedOutput = cleanOutput(output, true);
 
       // Handle SSH specific failures with detailed diagnostics
       if (command.includes("ssh") && (code === 255 || code !== 0)) {
@@ -494,7 +511,7 @@ export async function executeInteractiveCommand(
           if (!resolved) {
             resolved = true;
             sessionManager.endSession(phone);
-            const cleanedOutput = cleanOutput(output);
+            const cleanedOutput = cleanOutput(output, true);
             resolve(
               `⏰ **SSH Connection Timeout**\n\n🔌 **Issue**: SSH process timed out after 60 seconds\n\n💡 **Possible Causes**:\n- Multiple failed authentication attempts\n- Network connectivity issues\n- SSH service not responding\n\n📋 **Details**:\n\`\`\`\n${cleanedOutput || "No output received"}\n\`\`\``,
             );
@@ -502,6 +519,94 @@ export async function executeInteractiveCommand(
         }
       }, 60000); // 60 second timeout for SSH
     }
+  });
+}
+
+async function executeContinuousCommand(
+  command: string,
+  phone: string,
+  c: Context,
+): Promise<string> {
+  // End any existing session first
+  sessionManager.endSession(phone);
+
+  const sessionId = sessionManager.createSession(phone, command);
+
+  return new Promise((resolve) => {
+    let output = "";
+    let resolved = false;
+    let outputTimer: NodeJS.Timeout;
+
+    const childProcess = spawn("/bin/bash", ["-c", command], {
+      stdio: ["pipe", "pipe", "pipe"],
+      detached: false,
+    });
+
+    sessionManager.setProcess(sessionId, childProcess);
+
+    // Handle stdout
+    childProcess.stdout?.on("data", (data: Buffer) => {
+      const chunk = data.toString();
+      output += chunk;
+
+      console.log(`Continuous command output from ${phone}: ${chunk}`);
+
+      // For ping, send output after a few packets
+      if (command.includes("ping") && output.includes("64 bytes from")) {
+        const packets = (output.match(/64 bytes from/g) || []).length;
+        if (packets >= 4 && !resolved) {
+          resolved = true;
+          sessionManager.setWaitingForInput(sessionId, true);
+
+          const cleanedOutput = cleanOutput(output, true);
+          const message = `🖥️ **Continuous Command Output:**\n\`\`\`\n${cleanedOutput}\n\`\`\`\n\n💬 **Command is running continuously.** Send any message to stop or continue monitoring.\n\n⚡ Commands:\n• \`exit\` - Stop command\n• \`stop\` - Stop command`;
+
+          sendWhatsappMessage(c, phone, message);
+          resolve("🔄 Continuous command started. Monitoring output...");
+        }
+      }
+    });
+
+    // Handle stderr
+    childProcess.stderr?.on("data", (data: Buffer) => {
+      const chunk = data.toString();
+      output += chunk;
+      console.log(`Continuous command stderr from ${phone}: ${chunk}`);
+    });
+
+    // Handle process exit
+    childProcess.on("exit", (code) => {
+      sessionManager.endSession(phone);
+
+      if (!resolved) {
+        resolved = true;
+        const cleanedOutput = cleanOutput(output, true);
+        resolve(
+          `✅ Command completed (Exit Code: ${code})\n\n\`\`\`\n${cleanedOutput}\n\`\`\``,
+        );
+      }
+    });
+
+    // Handle errors
+    childProcess.on("error", (error) => {
+      sessionManager.endSession(phone);
+      if (!resolved) {
+        resolved = true;
+        resolve(`❌ Process error: ${error.message}`);
+      }
+    });
+
+    // Timeout for commands that don't produce expected output
+    setTimeout(() => {
+      if (!resolved) {
+        sessionManager.setWaitingForInput(sessionId, true);
+        const cleanedOutput = cleanOutput(output, true);
+        const message = `🖥️ **Command Output:**\n\`\`\`\n${cleanedOutput || "No output yet..."}\n\`\`\`\n\n💬 **Command is running.** Send any message to interact or stop.\n\n⚡ Commands:\n• \`exit\` - Stop command`;
+
+        sendWhatsappMessage(c, phone, message);
+        resolve("🔄 Command is running. Output will be shown as it comes.");
+      }
+    }, 5000);
   });
 }
 
@@ -518,7 +623,7 @@ function checkForInputRequest(
     return;
   }
 
-  const cleanedOutput = cleanOutput(output);
+  const cleanedOutput = cleanOutput(output, true);
 
   // For SSH commands, check for authentication failures first
   if (session.command.includes("ssh")) {
@@ -603,53 +708,15 @@ function checkForInputRequest(
     /\b(continue|proceed|install|upgrade|remove)\?\s*$/i.test(
       cleanedOutput.trim(),
     ) ||
-    (cleanedOutput.includes("$ ") &&
-      !session.command.includes("ssh") &&
-      !output.includes("Permission denied")) || // Bash prompt detected, but not for SSH failures
-    (/.*@.*?:\S*\$ ?$/m.test(cleanedOutput) &&
-      !output.includes("Permission denied") &&
-      !output.includes("Access denied") &&
-      !output.includes("Authentication failed")) // SSH prompt pattern, but not after auth failure
+    (cleanedOutput.includes("$ ") && !session.command.includes("ping")) // Enable bash prompt detection but not for ping
   ) {
     sessionManager.setWaitingForInput(sessionId, true);
 
     // Send current output and ask for input
     let displayOutput = cleanedOutput;
 
-    // For SSH sessions, show only relevant command output
-    if (session.command.includes("ssh")) {
-      const lines = displayOutput.split("\n");
-      const relevantLines = [];
-      let foundCommand = false;
-      const hasErrors =
-        displayOutput.includes("Permission denied") ||
-        displayOutput.includes("Access denied") ||
-        displayOutput.includes("Authentication failed");
-
-      for (let i = lines.length - 1; i >= 0; i--) {
-        const line = lines[i].trim();
-        if (line.includes("$ ") && foundCommand && !hasErrors) {
-          relevantLines.unshift(line);
-          break;
-        }
-        relevantLines.unshift(line);
-        if (line && !line.includes("$ ") && !line.match(/.*@.*?:[^$]*\$/)) {
-          foundCommand = true;
-        }
-      }
-
-      displayOutput = relevantLines.join("\n").trim();
-
-      // If display is just a prompt or empty, make it cleaner (but not if there are errors)
-      if (
-        !hasErrors &&
-        (displayOutput === "$ " ||
-          displayOutput.match(/^.*@.*?:[^$]*\$$/) ||
-          !displayOutput)
-      ) {
-        displayOutput = "$ Ready for next command";
-      }
-    }
+    // Don't modify output - show as is like terminal
+    displayOutput = cleanOutput(output, true);
 
     const message = `🖥️ **Interactive Command Output:**\n\`\`\`\n${displayOutput}\n\`\`\`\n\n💬 **Waiting for input.** Please send your response.\n\n⚡ Commands:\n• \`exit\` - End session\n• \`sessions\` - Show session info`;
 
@@ -682,6 +749,11 @@ function checkForInputRequest(
     // Special message for SSH commands
     if (session.command.includes("ssh")) {
       message = `🔄 **SSH Command started:** \`${session.command}\`\n\n💭 SSH may be:\n- Establishing connection\n- Waiting for password\n- Performing host key verification\n\nPlease wait or provide input when prompted.\n\n⚡ Commands:\n• \`exit\` - End session`;
+    }
+
+    // Special handling for continuous commands
+    if (session.command.includes("ping") || session.command.includes("top")) {
+      message = `🔄 **Continuous Command:** \`${session.command}\`\n\n💭 Command is running and may produce continuous output.\nPlease wait for output or type \`exit\` to stop.\n\n⚡ Commands:\n• \`exit\` - Stop command`;
     }
 
     sendWhatsappMessage(c, phone, message);
@@ -735,7 +807,7 @@ async function handleInteractiveInput(
         session.process!.stderr?.removeListener("data", handleOutput);
         sessionManager.endSession(session.phone);
 
-        const cleanedOutput = cleanOutput(output);
+        const cleanedOutput = cleanOutput(output, true);
         if (cleanedOutput.trim()) {
           resolve(
             `✅ Command completed (Exit Code: ${code})\n\n\`\`\`\n${cleanedOutput}\n\`\`\``,
@@ -756,7 +828,7 @@ async function handleInteractiveInput(
         session.process!.stdout?.removeListener("data", handleOutput);
         session.process!.stderr?.removeListener("data", handleOutput);
 
-        const cleanedOutput = cleanOutput(output);
+        const cleanedOutput = cleanOutput(output, true);
         if (cleanedOutput.trim()) {
           resolve(
             `⏰ Input processed. Current output:\n\`\`\`\n${cleanedOutput}\n\`\`\``,
