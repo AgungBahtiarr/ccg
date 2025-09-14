@@ -141,17 +141,15 @@ async function executeInteractiveCommand(
     // Modify command for better interactive handling
     let finalCommand = command;
 
-    // Special handling for SSH
+    // Special handling for SSH - force pseudo-terminal allocation
     if (command.trim().startsWith("ssh")) {
-      finalCommand = command.replace(
-        "ssh",
-        "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o NumberOfPasswordPrompts=3 -o ConnectTimeout=10",
-      );
+      finalCommand = `script -qec "${command} -tt -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=15 -o BatchMode=no" /dev/null`;
     }
 
     const childProcess = spawn("/bin/bash", ["-c", finalCommand], {
       stdio: ["pipe", "pipe", "pipe"],
       detached: false,
+      env: { ...process.env, TERM: "xterm-256color" },
     });
 
     sessionManager.setProcess(sessionId, childProcess);
@@ -159,6 +157,20 @@ async function executeInteractiveCommand(
     // Handle stdout
     childProcess.stdout?.on("data", (data: Buffer) => {
       const chunk = data.toString();
+
+      // Check for SSH password prompts more aggressively
+      if (
+        chunk.toLowerCase().includes("password") ||
+        chunk.includes("'s password:") ||
+        /password.*:/i.test(chunk)
+      ) {
+        sessionManager.setWaitingForInput(sessionId, true);
+        const message = `🔐 **SSH Password Required**\n\nCommand: \`${command}\`\n\nOutput:\n\`\`\`\n${output + chunk}\n\`\`\`\n\n💬 Please send your password now.\n\n⚡ Commands:\n• \`exit\` - End session`;
+        sendWhatsappMessage(c, phone, message);
+        resolve("🔐 SSH is asking for password. Please provide it now.");
+        return;
+      }
+
       output += chunk;
       hasReceivedOutput = true;
 
@@ -168,7 +180,7 @@ async function executeInteractiveCommand(
       clearTimeout(outputTimer);
       outputTimer = setTimeout(() => {
         checkForInputRequest(sessionId, phone, c, output, resolve);
-      }, 800); // Wait 800ms after last output
+      }, 300); // Wait 300ms after last output for very fast detection
     });
 
     // Handle stderr
@@ -201,11 +213,15 @@ async function executeInteractiveCommand(
       if (code === 255 && command.includes("ssh")) {
         if (output.includes("Permission denied")) {
           resolve(
-            `❌ SSH Authentication failed. The password was incorrect or the user doesn't exist.\n\nTry the command again:\n\`\`\`\n${output}\n\`\`\``,
+            `❌ SSH Authentication failed. The password was incorrect or the user doesn't exist.\n\n💡 **Tip**: Make sure to:\n- Use the correct username\n- Provide the password when prompted\n- Try the SSH command again\n\n\`\`\`\n${output}\n\`\`\``,
           );
         } else if (output.includes("Connection refused")) {
           resolve(
             `❌ SSH Connection refused. Check if SSH service is running on the target host.\n\n\`\`\`\n${output}\n\`\`\``,
+          );
+        } else if (output.includes("Connection timed out")) {
+          resolve(
+            `❌ SSH Connection timed out. Check if the host is reachable.\n\n\`\`\`\n${output}\n\`\`\``,
           );
         } else {
           resolve(
@@ -231,17 +247,17 @@ async function executeInteractiveCommand(
     // Initial timeout to check for immediate input requests
     outputTimer = setTimeout(() => {
       if (!hasReceivedOutput) {
-        // For SSH, check immediately if it might be waiting for password
+        // For SSH, assume it needs password if no output yet
         if (command.includes("ssh")) {
           sessionManager.setWaitingForInput(sessionId, true);
-          const message = `🔐 **SSH Connection:** \`${command}\`\n\n💭 SSH may be waiting for password. Please send your password now.\n\n⚡ Commands:\n• \`exit\` - End session`;
+          const message = `🔐 **SSH Starting**\n\nCommand: \`${command}\`\n\n💭 SSH may be waiting for password. Please send your password.\n\n⚡ Commands:\n• \`exit\` - End session`;
           sendWhatsappMessage(c, phone, message);
-          resolve("🔐 SSH connection started. Please provide your password.");
+          resolve("🔐 SSH may need password. Please provide it.");
         } else {
           checkForInputRequest(sessionId, phone, c, output, resolve);
         }
       }
-    }, 500);
+    }, 800);
   });
 }
 
