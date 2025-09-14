@@ -145,7 +145,7 @@ async function executeInteractiveCommand(
     if (command.trim().startsWith("ssh")) {
       finalCommand = command.replace(
         "ssh",
-        "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null",
+        "ssh -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o NumberOfPasswordPrompts=3 -o ConnectTimeout=10",
       );
     }
 
@@ -168,7 +168,7 @@ async function executeInteractiveCommand(
       clearTimeout(outputTimer);
       outputTimer = setTimeout(() => {
         checkForInputRequest(sessionId, phone, c, output, resolve);
-      }, 1000); // Wait 1 second after last output
+      }, 800); // Wait 800ms after last output
     });
 
     // Handle stderr
@@ -188,7 +188,7 @@ async function executeInteractiveCommand(
         clearTimeout(outputTimer);
         outputTimer = setTimeout(() => {
           checkForInputRequest(sessionId, phone, c, output, resolve);
-        }, 1000);
+        }, 800);
       }
     });
 
@@ -197,10 +197,27 @@ async function executeInteractiveCommand(
       clearTimeout(outputTimer);
       sessionManager.endSession(phone);
 
-      if (!hasReceivedOutput) {
+      // Handle SSH specific failures
+      if (code === 255 && command.includes("ssh")) {
+        if (output.includes("Permission denied")) {
+          resolve(
+            `❌ SSH Authentication failed. The password was incorrect or the user doesn't exist.\n\nTry the command again:\n\`\`\`\n${output}\n\`\`\``,
+          );
+        } else if (output.includes("Connection refused")) {
+          resolve(
+            `❌ SSH Connection refused. Check if SSH service is running on the target host.\n\n\`\`\`\n${output}\n\`\`\``,
+          );
+        } else {
+          resolve(
+            `❌ SSH failed (Exit Code: ${code})\n\n\`\`\`\n${output}\n\`\`\``,
+          );
+        }
+      } else if (!hasReceivedOutput) {
         resolve(`✅ Command completed (Exit Code: ${code})`);
       } else {
-        resolve(`✅ Command completed (Exit Code: ${code})\n\n${output}`);
+        resolve(
+          `✅ Command completed (Exit Code: ${code})\n\n\`\`\`\n${output}\n\`\`\``,
+        );
       }
     });
 
@@ -214,10 +231,17 @@ async function executeInteractiveCommand(
     // Initial timeout to check for immediate input requests
     outputTimer = setTimeout(() => {
       if (!hasReceivedOutput) {
-        // Command might be running silently, check anyway
-        checkForInputRequest(sessionId, phone, c, output, resolve);
+        // For SSH, check immediately if it might be waiting for password
+        if (command.includes("ssh")) {
+          sessionManager.setWaitingForInput(sessionId, true);
+          const message = `🔐 **SSH Connection:** \`${command}\`\n\n💭 SSH may be waiting for password. Please send your password now.\n\n⚡ Commands:\n• \`exit\` - End session`;
+          sendWhatsappMessage(c, phone, message);
+          resolve("🔐 SSH connection started. Please provide your password.");
+        } else {
+          checkForInputRequest(sessionId, phone, c, output, resolve);
+        }
       }
-    }, 2000);
+    }, 500);
   });
 }
 
@@ -241,6 +265,8 @@ function checkForInputRequest(
     "password for",
     "enter password:",
     "passphrase:",
+    "'s password:",
+    "password:",
     "continue?",
     "yes/no",
     "y/n",
@@ -271,6 +297,8 @@ function checkForInputRequest(
     "remove?",
     "delete?",
     "overwrite?",
+    "login:",
+    "username:",
   ];
 
   const needsInput = inputIndicators.some((indicator) =>
@@ -308,7 +336,7 @@ function checkForInputRequest(
         sendWhatsappMessage(c, phone, message);
       }
       resolve("🔄 Command is running. Output sent separately.");
-    }, 2000);
+    }, 1500);
   } else {
     // No output yet, assume it's waiting for input
     sessionManager.setWaitingForInput(sessionId, true);
