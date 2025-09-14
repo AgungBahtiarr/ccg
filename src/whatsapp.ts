@@ -16,6 +16,7 @@ export async function sendWhatsappMessage(
   message: string,
   gowaApiUrl: string,
 ): Promise<void> {
+  console.log(`Attempting to send message to ${phone} via ${gowaApiUrl}`);
   if (!gowaApiUrl) {
     console.error("Gowa API URL is not provided.");
     return;
@@ -23,6 +24,7 @@ export async function sendWhatsappMessage(
 
   try {
     const body = sendMessageSchema.parse({ phone, message });
+    console.log("Sending body:", JSON.stringify(body, null, 2));
     const response = await fetch(`${gowaApiUrl}/send/message`, {
       method: "POST",
       headers: {
