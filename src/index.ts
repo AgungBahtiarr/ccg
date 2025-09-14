@@ -7,9 +7,13 @@ import { env } from "hono/adapter";
 const app = new Hono();
 
 interface WebhookPayload {
-  phone: string;
-  message: string;
-  push_name: string;
+  sender?: {
+    phone?: string;
+    push_name?: string;
+  };
+  message?: string | { text?: string };
+  phone?: string;
+  push_name?: string;
 }
 
 // Endpoint untuk menerima webhook dari Gowa
@@ -20,7 +24,20 @@ app.post("/webhook", async (c) => {
   }>(c);
   try {
     const payload = await c.req.json<WebhookPayload>();
-    const { phone, message, push_name } = payload;
+    const phone = payload.sender?.phone ?? payload.phone;
+    const message =
+      typeof payload.message === "string"
+        ? payload.message
+        : payload.message?.text;
+    const push_name = payload.sender?.push_name ?? payload.push_name ?? "User";
+
+    if (!phone || !message) {
+      return c.json(
+        { error: "Invalid payload structure, phone or message is missing" },
+        400,
+      );
+    }
+
 
     // Ambil env vars dari context Hono
     const authorizedNumber = AUTHORIZED_NUMBER;
