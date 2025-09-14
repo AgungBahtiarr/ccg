@@ -262,10 +262,25 @@ export async function executeInteractiveCommand(
         output.includes("Connection timed out") ||
         output.includes("Host key verification failed");
 
-      // For SSH commands with auth failures, wait for process to exit
+      // For SSH commands with auth failures, check if we should force resolve
       if (command.includes("ssh") && hasAuthFailure) {
-        console.log(`SSH auth failure detected, waiting for process exit...`);
+        const attempts = (output.match(/Permission denied/g) || []).length;
+        console.log(`SSH auth failure detected, attempts: ${attempts}`);
         console.log(`Current output: ${output}`);
+
+        // Force resolve after 3 attempts to prevent hanging
+        if (attempts >= 3 && !resolved) {
+          console.log(
+            `Forcing SSH auth failure resolution after ${attempts} attempts`,
+          );
+          resolved = true;
+          sessionManager.endSession(phone);
+          const cleanedOutput = cleanOutput(output);
+          resolve(
+            `❌ **SSH Authentication Failed**\n\n🔐 **Issue**: Wrong password or username (${attempts} attempts)\n\n💡 **Solutions**:\n- Double-check username: \`${command.split("@")[0].replace("ssh ", "")}\`\n- Verify password is correct\n- Ensure user exists on target system\n- Try: \`!ssh -v ${command.split(" ").slice(1).join(" ")}\` for verbose output\n\n📋 **Details**:\n\`\`\`\n${cleanedOutput}\n\`\`\``,
+          );
+          return;
+        }
         return; // Don't process further, let exit handler manage this
       }
 
@@ -436,6 +451,30 @@ export async function executeInteractiveCommand(
         }
       }
     }, 800);
+
+    // Add SSH-specific timeout to prevent hanging
+    if (command.includes("ssh")) {
+      setTimeout(() => {
+        if (!resolved && childProcess && !childProcess.killed) {
+          console.log(`SSH timeout reached, killing process`);
+          childProcess.kill("SIGTERM");
+          setTimeout(() => {
+            if (!childProcess.killed) {
+              childProcess.kill("SIGKILL");
+            }
+          }, 2000);
+
+          if (!resolved) {
+            resolved = true;
+            sessionManager.endSession(phone);
+            const cleanedOutput = cleanOutput(output);
+            resolve(
+              `⏰ **SSH Connection Timeout**\n\n🔌 **Issue**: SSH process timed out after 60 seconds\n\n💡 **Possible Causes**:\n- Multiple failed authentication attempts\n- Network connectivity issues\n- SSH service not responding\n\n📋 **Details**:\n\`\`\`\n${cleanedOutput || "No output received"}\n\`\`\``,
+            );
+          }
+        }
+      }, 60000); // 60 second timeout for SSH
+    }
   });
 }
 
