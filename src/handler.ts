@@ -26,15 +26,21 @@ export async function executeCommand(command: string): Promise<string> {
   }
 
   try {
-    const { stdout, stderr, exitCode } = await $`${command}`.nothrow();
+    const proc = Bun.spawn(["/bin/bash", "-c", command], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    const stdout = await new Response(proc.stdout).text();
+    const stderr = await new Response(proc.stderr).text();
+    const exitCode = await proc.exited;
 
     if (exitCode !== 0) {
-      return `Error (Exit Code: ${exitCode}):\n${stderr.toString()}`;
+      return `Error (Exit Code: ${exitCode}):\n${stderr.trim()}`;
     }
 
-    const output = stdout.toString();
     return (
-      output.trim() || "Command executed successfully, but produced no output."
+      stdout.trim() || "Command executed successfully, but produced no output."
     );
   } catch (error) {
     if (error instanceof Error) {
