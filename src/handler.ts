@@ -32,6 +32,16 @@ const INTERACTIVE_COMMANDS = [
   "sftp",
   "telnet",
   "ping", // for continuous ping
+  "apt",
+  "apt-get",
+  "yum",
+  "dnf",
+  "pacman",
+  "zypper",
+  "snap",
+  "pip",
+  "npm",
+  "yarn",
 ];
 
 export async function executeCommand(
@@ -164,16 +174,22 @@ async function executeInteractiveCommand(
     // Handle stderr
     childProcess.stderr?.on("data", (data: Buffer) => {
       const chunk = data.toString();
-      output += chunk;
-      hasReceivedOutput = true;
 
-      console.log(`Interactive stderr from ${phone}: ${chunk}`);
+      // Filter out apt CLI warnings but keep other stderr
+      if (
+        !chunk.includes("WARNING: apt does not have a stable CLI interface")
+      ) {
+        output += chunk;
+        hasReceivedOutput = true;
 
-      // Reset the timer whenever we receive output
-      clearTimeout(outputTimer);
-      outputTimer = setTimeout(() => {
-        checkForInputRequest(sessionId, phone, c, output, resolve);
-      }, 1000);
+        console.log(`Interactive stderr from ${phone}: ${chunk}`);
+
+        // Reset the timer whenever we receive output
+        clearTimeout(outputTimer);
+        outputTimer = setTimeout(() => {
+          checkForInputRequest(sessionId, phone, c, output, resolve);
+        }, 1000);
+      }
     });
 
     // Handle process exit
@@ -229,13 +245,32 @@ function checkForInputRequest(
     "yes/no",
     "y/n",
     "[y/n]",
+    "(y/n)",
+    "do you want to continue",
+    "do you want to install",
+    "proceed with",
+    "are you sure",
+    "confirm",
     "press any key",
     "enter",
     "input:",
     "please enter",
     "waiting for input",
-    "are you sure",
-    "confirm",
+    "install these packages",
+    "continue with this action",
+    "abort the installation",
+    "would you like to",
+    "type 'yes' to continue",
+    "do you want to",
+    "shall i",
+    "ok to continue",
+    "continue?",
+    "proceed?",
+    "install?",
+    "upgrade?",
+    "remove?",
+    "delete?",
+    "overwrite?",
   ];
 
   const needsInput = inputIndicators.some((indicator) =>
@@ -245,7 +280,14 @@ function checkForInputRequest(
   if (
     needsInput ||
     output.trim().endsWith(":") ||
-    output.trim().endsWith("?")
+    output.trim().endsWith("?") ||
+    output.trim().endsWith("(Y/n)") ||
+    output.trim().endsWith("(y/N)") ||
+    output.trim().endsWith("[Y/n]") ||
+    output.trim().endsWith("[y/N]") ||
+    output.trim().endsWith("(yes/no)") ||
+    output.trim().endsWith("[yes/no]") ||
+    /\b(continue|proceed|install|upgrade|remove)\?\s*$/i.test(output.trim())
   ) {
     sessionManager.setWaitingForInput(sessionId, true);
 
