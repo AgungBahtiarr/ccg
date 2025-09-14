@@ -72,20 +72,16 @@ app.post("/webhook", async (c) => {
     const command = message.substring(1);
     console.log(`Extracted command: ${command}`);
 
-    // Proses command secara asynchronous
-    c.executionCtx.waitUntil(
-      (async () => {
-        console.log(
-          `Executing command from ${push_name} (${phone}): ${command}`,
-        );
-        const result = await executeCommand(command);
-        console.log(`Command result: ${result}`);
-        await sendWhatsappMessage(phone, result, gowaApiUrl);
-      })(),
+    // Proses command secara synchronous
+    console.log(
+      `Executing command from ${push_name} (${phone}): ${command}`,
     );
+    const result = await executeCommand(command);
+    console.log(`Command result: ${result}`);
+    await sendWhatsappMessage(phone, result, gowaApiUrl);
 
-    // Langsung balas ke Gowa bahwa webhook sudah diterima
-    return c.json({ status: "ok", message: "Webhook received" }, 202);
+    // Balas setelah semua proses selesai
+    return c.json({ status: "ok", message: "Command processed" }, 200);
   } catch (error) {
     return c.json({ error: "Invalid JSON payload" }, 400);
   }
