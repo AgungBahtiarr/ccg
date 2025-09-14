@@ -20,7 +20,7 @@ function cleanOutput(text: string): string {
     // Remove bracketed paste mode sequences
     .replace(/\x1b\[\?2004[hl]/g, "");
 
-  // Remove SSH login messages and warnings
+  // Remove SSH login messages and warnings (but keep error messages)
   const linesToRemove = [
     /Warning: Permanently added .* to the list of known hosts\./,
     /Linux .* x86_64/,
@@ -36,6 +36,17 @@ function cleanOutput(text: string): string {
   const filteredLines = lines.filter((line) => {
     const trimmedLine = line.trim();
     if (!trimmedLine) return false;
+    // Keep important error messages even if they match some patterns
+    if (
+      trimmedLine.includes("Permission denied") ||
+      trimmedLine.includes("Access denied") ||
+      trimmedLine.includes("Authentication failed") ||
+      trimmedLine.includes("Connection refused") ||
+      trimmedLine.includes("Connection timed out") ||
+      trimmedLine.includes("Host key verification failed")
+    ) {
+      return true;
+    }
     return !linesToRemove.some((regex) => regex.test(trimmedLine));
   });
 
@@ -53,15 +64,30 @@ function cleanOutput(text: string): string {
     .trim();
 
   // If output is mostly SSH login stuff, return empty to avoid spam
+  // BUT preserve error messages
   const importantLines = cleaned
     .split("\n")
     .filter(
       (line) =>
-        line.trim() && !line.includes("$ ") && !line.match(/.*@.*?:[^$]*\$/),
+        line.trim() &&
+        !line.includes("$ ") &&
+        !line.match(/.*@.*?:[^$]*\$/) &&
+        !(
+          line.includes("Permission denied") ||
+          line.includes("Access denied") ||
+          line.includes("Authentication failed")
+        ),
     );
 
-  if (importantLines.length === 0 && cleaned.includes("$ ")) {
-    return "$ "; // Just show prompt
+  const hasErrors =
+    cleaned.includes("Permission denied") ||
+    cleaned.includes("Access denied") ||
+    cleaned.includes("Authentication failed") ||
+    cleaned.includes("Connection refused") ||
+    cleaned.includes("Connection timed out");
+
+  if (importantLines.length === 0 && cleaned.includes("$ ") && !hasErrors) {
+    return "$ "; // Just show prompt if no errors
   }
 
   return cleaned;
@@ -226,15 +252,24 @@ async function executeInteractiveCommand(
 
       console.log(`Interactive stdout from ${phone}: ${chunk}`);
 
-      // Check for SSH password prompts, but only if no permission denied in recent output
-      const recentOutput = output.slice(-500); // Check last 500 characters
-      const hasPermissionDenied =
-        recentOutput.includes("Permission denied") ||
-        recentOutput.includes("Access denied") ||
-        recentOutput.includes("Authentication failed");
+      // Check for SSH authentication failures - don't process as interactive if failing
+      const hasAuthFailure =
+        output.includes("Permission denied") ||
+        output.includes("Access denied") ||
+        output.includes("Authentication failed") ||
+        output.includes("Connection refused") ||
+        output.includes("Connection timed out") ||
+        output.includes("Host key verification failed");
 
+      // For SSH commands with auth failures, wait for process to exit
+      if (command.includes("ssh") && hasAuthFailure) {
+        console.log(`SSH auth failure detected, waiting for process exit...`);
+        return; // Don't process further, let exit handler manage this
+      }
+
+      // Check for SSH password prompts, but only if no auth failure
       if (
-        !hasPermissionDenied &&
+        !hasAuthFailure &&
         (chunk.toLowerCase().includes("password") ||
           chunk.includes("'s password:") ||
           /password.*:/i.test(chunk)) &&
@@ -251,11 +286,13 @@ async function executeInteractiveCommand(
         return;
       }
 
-      // Reset the timer whenever we receive output
-      clearTimeout(outputTimer);
-      outputTimer = setTimeout(() => {
-        checkForInputRequest(sessionId, phone, c, output, resolve);
-      }, 500); // Wait 500ms after last output
+      // Reset the timer whenever we receive output (but not for SSH auth failures)
+      if (!hasAuthFailure) {
+        clearTimeout(outputTimer);
+        outputTimer = setTimeout(() => {
+          checkForInputRequest(sessionId, phone, c, output, resolve);
+        }, 500); // Wait 500ms after last output
+      }
     });
 
     // Handle stderr
@@ -452,9 +489,13 @@ function checkForInputRequest(
     /\b(continue|proceed|install|upgrade|remove)\?\s*$/i.test(
       cleanedOutput.trim(),
     ) ||
-    (cleanedOutput.includes("$ ") && !session.command.includes("ssh")) || // Bash prompt detected, but not for SSH failures
+    (cleanedOutput.includes("$ ") &&
+      !session.command.includes("ssh") &&
+      !output.includes("Permission denied")) || // Bash prompt detected, but not for SSH failures
     (/.*@.*?:\S*\$ ?$/m.test(cleanedOutput) &&
-      !output.includes("Permission denied")) // SSH prompt pattern, but not after auth failure
+      !output.includes("Permission denied") &&
+      !output.includes("Access denied") &&
+      !output.includes("Authentication failed")) // SSH prompt pattern, but not after auth failure
   ) {
     sessionManager.setWaitingForInput(sessionId, true);
 
@@ -466,10 +507,14 @@ function checkForInputRequest(
       const lines = displayOutput.split("\n");
       const relevantLines = [];
       let foundCommand = false;
+      const hasErrors =
+        displayOutput.includes("Permission denied") ||
+        displayOutput.includes("Access denied") ||
+        displayOutput.includes("Authentication failed");
 
       for (let i = lines.length - 1; i >= 0; i--) {
         const line = lines[i].trim();
-        if (line.includes("$ ") && foundCommand) {
+        if (line.includes("$ ") && foundCommand && !hasErrors) {
           relevantLines.unshift(line);
           break;
         }
@@ -481,11 +526,12 @@ function checkForInputRequest(
 
       displayOutput = relevantLines.join("\n").trim();
 
-      // If display is just a prompt or empty, make it cleaner
+      // If display is just a prompt or empty, make it cleaner (but not if there are errors)
       if (
-        displayOutput === "$ " ||
-        displayOutput.match(/^.*@.*?:[^$]*\$$/) ||
-        !displayOutput
+        !hasErrors &&
+        (displayOutput === "$ " ||
+          displayOutput.match(/^.*@.*?:[^$]*\$$/) ||
+          !displayOutput)
       ) {
         displayOutput = "$ Ready for next command";
       }
