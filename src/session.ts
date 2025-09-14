@@ -8,6 +8,8 @@ export interface InteractiveSession {
   isWaitingForInput: boolean;
   createdAt: Date;
   lastActivity: Date;
+  lastOutput?: string;
+  lastMessageSent?: Date;
 }
 
 class SessionManager {
@@ -30,6 +32,8 @@ class SessionManager {
       isWaitingForInput: false,
       createdAt: new Date(),
       lastActivity: new Date(),
+      lastOutput: undefined,
+      lastMessageSent: undefined,
     };
 
     this.sessions.set(sessionId, session);
@@ -39,7 +43,7 @@ class SessionManager {
   getSession(phone: string): InteractiveSession | undefined {
     // Find the most recent active session for this phone
     const userSessions = Array.from(this.sessions.values())
-      .filter(s => s.phone === phone)
+      .filter((s) => s.phone === phone)
       .sort((a, b) => b.lastActivity.getTime() - a.lastActivity.getTime());
 
     return userSessions[0];
@@ -72,7 +76,7 @@ class SessionManager {
     const session = this.getSession(phone);
     if (session) {
       if (session.process && !session.process.killed) {
-        session.process.kill('SIGTERM');
+        session.process.kill("SIGTERM");
       }
       this.sessions.delete(session.id);
     }
@@ -83,7 +87,7 @@ class SessionManager {
     for (const [sessionId, session] of this.sessions.entries()) {
       if (now - session.lastActivity.getTime() > this.SESSION_TIMEOUT) {
         if (session.process && !session.process.killed) {
-          session.process.kill('SIGTERM');
+          session.process.kill("SIGTERM");
         }
         this.sessions.delete(sessionId);
         console.log(`Cleaned up expired session: ${sessionId}`);
@@ -93,6 +97,31 @@ class SessionManager {
 
   getAllSessions(): InteractiveSession[] {
     return Array.from(this.sessions.values());
+  }
+
+  shouldSendMessage(phone: string, output: string): boolean {
+    const session = this.getSession(phone);
+    if (!session) return true;
+
+    const now = new Date();
+    const timeSinceLastMessage = session.lastMessageSent
+      ? now.getTime() - session.lastMessageSent.getTime()
+      : 0;
+
+    // If same output and sent within last 3 seconds, don't send
+    if (session.lastOutput === output && timeSinceLastMessage < 3000) {
+      return false;
+    }
+
+    return true;
+  }
+
+  markMessageSent(phone: string, output: string): void {
+    const session = this.getSession(phone);
+    if (session) {
+      session.lastOutput = output;
+      session.lastMessageSent = new Date();
+    }
   }
 }
 
