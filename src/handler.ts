@@ -213,7 +213,7 @@ async function executeNonInteractiveCommand(command: string): Promise<string> {
   }
 }
 
-async function executeInteractiveCommand(
+export async function executeInteractiveCommand(
   command: string,
   phone: string,
   c: Context,
@@ -227,6 +227,7 @@ async function executeInteractiveCommand(
     let output = "";
     let hasReceivedOutput = false;
     let outputTimer: NodeJS.Timeout;
+    let resolved = false; // Track if promise is already resolved
 
     // Modify command for better interactive handling
     let finalCommand = command;
@@ -264,6 +265,7 @@ async function executeInteractiveCommand(
       // For SSH commands with auth failures, wait for process to exit
       if (command.includes("ssh") && hasAuthFailure) {
         console.log(`SSH auth failure detected, waiting for process exit...`);
+        console.log(`Current output: ${output}`);
         return; // Don't process further, let exit handler manage this
       }
 
@@ -282,7 +284,10 @@ async function executeInteractiveCommand(
           sendWhatsappMessage(c, phone, message);
           sessionManager.markMessageSent(phone, cleanedChunk);
         }
-        resolve("🔐 SSH is asking for password. Please provide it now.");
+        if (!resolved) {
+          resolved = true;
+          resolve("🔐 SSH is asking for password. Please provide it now.");
+        }
         return;
       }
 
@@ -319,6 +324,10 @@ async function executeInteractiveCommand(
     // Handle process exit
     childProcess.on("exit", (code, signal) => {
       clearTimeout(outputTimer);
+      console.log(`Process exited with code: ${code}, signal: ${signal}`);
+      console.log(`Final output: ${output}`);
+      console.log(`Has received output: ${hasReceivedOutput}`);
+      console.log(`Resolved status: ${resolved}`);
       sessionManager.endSession(phone);
 
       const cleanedOutput = cleanOutput(output);
@@ -327,40 +336,73 @@ async function executeInteractiveCommand(
       if (command.includes("ssh") && (code === 255 || code !== 0)) {
         if (output.includes("Permission denied")) {
           const attempts = (output.match(/Permission denied/g) || []).length;
-          resolve(
-            `❌ **SSH Authentication Failed**\n\n🔐 **Issue**: Wrong password or username (${attempts} attempts)\n\n💡 **Solutions**:\n- Double-check username: \`${command.split("@")[0].replace("ssh ", "")}\`\n- Verify password is correct\n- Ensure user exists on target system\n- Try: \`!ssh -v ${command.split(" ").slice(1).join(" ")}\` for verbose output\n\n📋 **Details**:\n\`\`\`\n${cleanedOutput}\n\`\`\``,
+          console.log(
+            `Sending SSH auth failure message with ${attempts} attempts`,
           );
+          if (!resolved) {
+            resolved = true;
+            resolve(
+              `❌ **SSH Authentication Failed**\n\n🔐 **Issue**: Wrong password or username (${attempts} attempts)\n\n💡 **Solutions**:\n- Double-check username: \`${command.split("@")[0].replace("ssh ", "")}\`\n- Verify password is correct\n- Ensure user exists on target system\n- Try: \`!ssh -v ${command.split(" ").slice(1).join(" ")}\` for verbose output\n\n📋 **Details**:\n\`\`\`\n${cleanedOutput}\n\`\`\``,
+            );
+          }
         } else if (output.includes("Connection refused")) {
-          resolve(
-            `❌ **SSH Connection Refused**\n\n🔌 **Issue**: SSH service not accessible\n\n💡 **Solutions**:\n- Check if SSH service is running: \`sudo systemctl status ssh\`\n- Verify correct port (default 22): \`!ssh -p 22 ${command.split(" ").slice(1).join(" ")}\`\n- Check firewall settings on target host\n- Ensure host is reachable: \`!ping ${command.split("@")[1] || command.split(" ")[1]}\`\n\n📋 **Details**:\n\`\`\`\n${cleanedOutput}\n\`\`\``,
-          );
+          console.log(`Sending SSH connection refused message`);
+          if (!resolved) {
+            resolved = true;
+            resolve(
+              `❌ **SSH Connection Refused**\n\n🔌 **Issue**: SSH service not accessible\n\n💡 **Solutions**:\n- Check if SSH service is running: \`sudo systemctl status ssh\`\n- Verify correct port (default 22): \`!ssh -p 22 ${command.split(" ").slice(1).join(" ")}\`\n- Check firewall settings on target host\n- Ensure host is reachable: \`!ping ${command.split("@")[1] || command.split(" ")[1]}\`\n\n📋 **Details**:\n\`\`\`\n${cleanedOutput}\n\`\`\``,
+            );
+          }
         } else if (output.includes("Connection timed out")) {
-          resolve(
-            `❌ **SSH Connection Timeout**\n\n⏰ **Issue**: Host unreachable or network problems\n\n💡 **Solutions**:\n- Check network connectivity: \`!ping ${command.split("@")[1] || command.split(" ")[1]}\`\n- Verify correct hostname/IP address\n- Check if host is powered on\n- Try with longer timeout: \`!ssh -o ConnectTimeout=30 ${command.split(" ").slice(1).join(" ")}\`\n\n📋 **Details**:\n\`\`\`\n${cleanedOutput}\n\`\`\``,
-          );
+          console.log(`Sending SSH connection timeout message`);
+          if (!resolved) {
+            resolved = true;
+            resolve(
+              `❌ **SSH Connection Timeout**\n\n⏰ **Issue**: Host unreachable or network problems\n\n💡 **Solutions**:\n- Check network connectivity: \`!ping ${command.split("@")[1] || command.split(" ")[1]}\`\n- Verify correct hostname/IP address\n- Check if host is powered on\n- Try with longer timeout: \`!ssh -o ConnectTimeout=30 ${command.split(" ").slice(1).join(" ")}\`\n\n📋 **Details**:\n\`\`\`\n${cleanedOutput}\n\`\`\``,
+            );
+          }
         } else if (output.includes("Host key verification failed")) {
-          resolve(
-            `❌ **SSH Host Key Verification Failed**\n\n🔑 **Issue**: Host key has changed (potential security risk)\n\n💡 **Solutions**:\n- If you trust the host, remove old key: \`ssh-keygen -R ${command.split("@")[1] || command.split(" ")[1]}\`\n- Or use: \`!ssh -o StrictHostKeyChecking=no ${command.split(" ").slice(1).join(" ")}\`\n- Contact system administrator if unexpected\n\n📋 **Details**:\n\`\`\`\n${cleanedOutput}\n\`\`\``,
-          );
+          if (!resolved) {
+            resolved = true;
+            resolve(
+              `❌ **SSH Host Key Verification Failed**\n\n🔑 **Issue**: Host key has changed (potential security risk)\n\n💡 **Solutions**:\n- If you trust the host, remove old key: \`ssh-keygen -R ${command.split("@")[1] || command.split(" ")[1]}\`\n- Or use: \`!ssh -o StrictHostKeyChecking=no ${command.split(" ").slice(1).join(" ")}\`\n- Contact system administrator if unexpected\n\n📋 **Details**:\n\`\`\`\n${cleanedOutput}\n\`\`\``,
+            );
+          }
         } else if (output.includes("Name or service not known")) {
-          resolve(
-            `❌ **SSH Hostname Resolution Failed**\n\n🌐 **Issue**: Cannot resolve hostname\n\n💡 **Solutions**:\n- Check hostname spelling: \`${command.split("@")[1] || command.split(" ")[1]}\`\n- Try using IP address instead\n- Check DNS settings: \`!nslookup ${command.split("@")[1] || command.split(" ")[1]}\`\n- Verify network connectivity\n\n📋 **Details**:\n\`\`\`\n${cleanedOutput}\n\`\`\``,
-          );
+          if (!resolved) {
+            resolved = true;
+            resolve(
+              `❌ **SSH Hostname Resolution Failed**\n\n🌐 **Issue**: Cannot resolve hostname\n\n💡 **Solutions**:\n- Check hostname spelling: \`${command.split("@")[1] || command.split(" ")[1]}\`\n- Try using IP address instead\n- Check DNS settings: \`!nslookup ${command.split("@")[1] || command.split(" ")[1]}\`\n- Verify network connectivity\n\n📋 **Details**:\n\`\`\`\n${cleanedOutput}\n\`\`\``,
+            );
+          }
         } else if (output.includes("Connection closed by")) {
-          resolve(
-            `❌ **SSH Connection Closed by Remote Host**\n\n🚫 **Issue**: Remote host terminated connection\n\n💡 **Possible Causes**:\n- Too many failed login attempts (account locked)\n- IP address banned/blocked\n- SSH service configuration restricts access\n- Server overload or maintenance\n\n💡 **Solutions**:\n- Wait a few minutes and try again\n- Contact system administrator\n- Check if your IP is whitelisted\n\n📋 **Details**:\n\`\`\`\n${cleanedOutput}\n\`\`\``,
-          );
+          if (!resolved) {
+            resolved = true;
+            resolve(
+              `❌ **SSH Connection Closed by Remote Host**\n\n🚫 **Issue**: Remote host terminated connection\n\n💡 **Possible Causes**:\n- Too many failed login attempts (account locked)\n- IP address banned/blocked\n- SSH service configuration restricts access\n- Server overload or maintenance\n\n💡 **Solutions**:\n- Wait a few minutes and try again\n- Contact system administrator\n- Check if your IP is whitelisted\n\n📋 **Details**:\n\`\`\`\n${cleanedOutput}\n\`\`\``,
+            );
+          }
         } else {
-          resolve(
-            `❌ **SSH Failed (Exit Code: ${code})**\n\n⚠️ **Unexpected Error**\n\n💡 **Try**:\n- Run with verbose output: \`!ssh -v ${command.split(" ").slice(1).join(" ")}\`\n- Check command syntax\n- Verify all parameters\n\n📋 **Details**:\n\`\`\`\n${cleanedOutput}\n\`\`\``,
-          );
+          console.log(`Sending generic SSH failure message`);
+          if (!resolved) {
+            resolved = true;
+            resolve(
+              `❌ **SSH Failed (Exit Code: ${code})**\n\n⚠️ **Unexpected Error**\n\n💡 **Try**:\n- Run with verbose output: \`!ssh -v ${command.split(" ").slice(1).join(" ")}\`\n- Check command syntax\n- Verify all parameters\n\n📋 **Details**:\n\`\`\`\n${cleanedOutput}\n\`\`\``,
+            );
+          }
         }
       } else if (!hasReceivedOutput) {
-        resolve(`✅ Command completed (Exit Code: ${code})`);
+        if (!resolved) {
+          resolved = true;
+          resolve(`✅ Command completed (Exit Code: ${code})`);
+        }
       } else {
-        resolve(
-          `✅ Command completed (Exit Code: ${code})\n\n\`\`\`\n${cleanedOutput}\n\`\`\``,
-        );
+        if (!resolved) {
+          resolved = true;
+          resolve(
+            `✅ Command completed (Exit Code: ${code})\n\n\`\`\`\n${cleanedOutput}\n\`\`\``,
+          );
+        }
       }
     });
 
@@ -368,7 +410,10 @@ async function executeInteractiveCommand(
     childProcess.on("error", (error) => {
       clearTimeout(outputTimer);
       sessionManager.endSession(phone);
-      resolve(`❌ Process error: ${error.message}`);
+      if (!resolved) {
+        resolved = true;
+        resolve(`❌ Process error: ${error.message}`);
+      }
     });
 
     // Initial timeout to check for immediate input requests
@@ -382,7 +427,10 @@ async function executeInteractiveCommand(
             sendWhatsappMessage(c, phone, message);
             sessionManager.markMessageSent(phone, command);
           }
-          resolve("🔐 SSH may need password. Please provide it.");
+          if (!resolved) {
+            resolved = true;
+            resolve("🔐 SSH may need password. Please provide it.");
+          }
         } else {
           checkForInputRequest(sessionId, phone, c, output, resolve);
         }
