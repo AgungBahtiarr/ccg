@@ -24,6 +24,7 @@ app.post("/webhook", async (c) => {
   }>(c);
   try {
     const payload = await c.req.json<WebhookPayload>();
+    console.log(payload);
     const phone = payload.sender?.phone ?? payload.phone;
     const message =
       typeof payload.message === "string"
@@ -37,7 +38,6 @@ app.post("/webhook", async (c) => {
         400,
       );
     }
-
 
     // Ambil env vars dari context Hono
     const authorizedNumber = AUTHORIZED_NUMBER;
