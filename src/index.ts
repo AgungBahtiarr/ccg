@@ -1,15 +1,10 @@
 import { Hono } from "hono";
 import { executeCommand } from "./handler";
 import { sendWhatsappMessage } from "./whatsapp";
-
-// Definisikan tipe untuk environment variables
-type Env = {
-  GOWA_API_URL: string;
-  AUTHORIZED_NUMBER: string;
-};
+import { env } from "hono/adapter";
 
 // Gunakan tipe Env pada Hono
-const app = new Hono<{ Bindings: Env }>();
+const app = new Hono();
 
 interface WebhookPayload {
   phone: string;
@@ -19,13 +14,17 @@ interface WebhookPayload {
 
 // Endpoint untuk menerima webhook dari Gowa
 app.post("/webhook", async (c) => {
+  const { AUTHORIZED_NUMBER, GOWA_API_URL } = env<{
+    AUTHORIZED_NUMBER: string;
+    GOWA_API_URL: string;
+  }>(c);
   try {
     const payload = await c.req.json<WebhookPayload>();
     const { phone, message, push_name } = payload;
 
     // Ambil env vars dari context Hono
-    const authorizedNumber = c.env.AUTHORIZED_NUMBER;
-    const gowaApiUrl = c.env.GOWA_API_URL;
+    const authorizedNumber = AUTHORIZED_NUMBER;
+    const gowaApiUrl = GOWA_API_URL;
 
     if (!authorizedNumber || !gowaApiUrl) {
       console.error("GOWA_API_URL or AUTHORIZED_NUMBER are not set.");
