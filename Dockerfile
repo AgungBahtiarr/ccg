@@ -1,30 +1,17 @@
-# Use the official Bun image as a base image
-FROM oven/bun:1-debian
-
-# Set the working directory in the container
-WORKDIR /app
-
-# Install additional packages
-RUN apt-get update && apt-get install -y net-tools openssh-server && rm -rf /var/lib/apt/lists/*
-
-# Copy package.json and bun.lock to leverage Docker cache
-COPY package.json bun.lock* ./
-
-# Install dependencies
-RUN bun install
-
-ARG GOWA_API_URL
-ARG AUTHORIZED_NUMBER
-
-# Jalankan build
-RUN GOWA_API_URL=$GOWA_API_URL \
-    AUTHORIZED_NUMBER=$AUTHORIZED_NUMBER \
-
-# Copy the rest of the application code
+FROM oven/bun:latest AS builder
+WORKDIR /usr/src/app
+COPY package.json bun.lock ./
+RUN bun install --frozen-lockfile
 COPY . .
 
-# Expose the port the app runs on
-EXPOSE 3000
+FROM oven/bun:latest AS release
+WORKDIR /usr/src/app
 
-# Define the command to run the application
-CMD ["bun", "run", "src/index.ts"]
+USER root
+
+RUN apt-get update && apt-get install -y whois netbase && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /usr/src/app .
+
+EXPOSE 3000
+CMD ["bun","--bun", "run", "src/index.ts"]
