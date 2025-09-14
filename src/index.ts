@@ -45,13 +45,22 @@ app.post("/webhook", async (c) => {
       return c.json({ status: "unauthorized" }, 403);
     }
 
+    // Cek apakah pesan adalah command yang valid
+    if (!message.startsWith("!")) {
+      console.log(`Ignoring non-command message from ${phone}: "${message}"`);
+      return c.json({ status: "ok", message: "Not a command" }, 200);
+    }
+
+    // Ekstrak command dari pesan
+    const command = message.substring(1);
+
     // Proses command secara asynchronous
     c.executionCtx.waitUntil(
       (async () => {
         console.log(
-          `Executing command from ${push_name} (${phone}): ${message}`,
+          `Executing command from ${push_name} (${phone}): ${command}`,
         );
-        const result = await executeCommand(message);
+        const result = await executeCommand(command);
         await sendWhatsappMessage(phone, result, gowaApiUrl);
       })(),
     );
