@@ -3,6 +3,36 @@ import { sessionManager, InteractiveSession } from "./session";
 import { Context } from "hono";
 import { sendWhatsappMessage } from "./whatsapp";
 
+// Function to clean ANSI escape sequences and control characters
+function cleanOutput(text: string): string {
+  return (
+    text
+      // Remove ANSI escape sequences
+      .replace(/\x1b\[[0-9;]*[mGKHF]/g, "")
+      // Remove ANSI color codes
+      .replace(/\x1b\[[0-9;]*m/g, "")
+      // Remove terminal control sequences
+      .replace(/\x1b\[\?[0-9]+[hl]/g, "")
+      // Remove carriage returns followed by spaces
+      .replace(/\r\s+/g, "\r")
+      // Remove OSC sequences (like window title changes)
+      .replace(/\x1b\][0-9;]*.*?\x07/g, "")
+      .replace(/\x1b\][0-9;]*.*?\x1b\\/g, "")
+      // Remove bracketed paste mode sequences
+      .replace(/\x1b\[\?2004[hl]/g, "")
+      // Clean up multiple newlines
+      .replace(/\n{3,}/g, "\n\n")
+      // Remove trailing whitespace from lines
+      .replace(/[ \t]+$/gm, "")
+      // Clean bash prompt artifacts
+      .replace(/\][0-9;]*;.*?@.*?:[^$]*\$ /g, "$ ")
+      // Remove common bash prompt sequences
+      .replace(/.*@.*?:\~?\$ /g, "$ ")
+      .replace(/.*@.*?:[^$]*\$ /g, "$ ")
+      .trim()
+  );
+}
+
 // --- SECURITY WARNING: Blacklist is less secure than a whitelist ---
 const BLOCKED_COMMANDS = [
   "rm",
@@ -165,7 +195,8 @@ async function executeInteractiveCommand(
         /password.*:/i.test(chunk)
       ) {
         sessionManager.setWaitingForInput(sessionId, true);
-        const message = `🔐 **SSH Password Required**\n\nCommand: \`${command}\`\n\nOutput:\n\`\`\`\n${output + chunk}\n\`\`\`\n\n💬 Please send your password now.\n\n⚡ Commands:\n• \`exit\` - End session`;
+        const cleanedChunk = cleanOutput(output + chunk);
+        const message = `🔐 **SSH Password Required**\n\nCommand: \`${command}\`\n\nOutput:\n\`\`\`\n${cleanedChunk}\n\`\`\`\n\n💬 Please send your password now.\n\n⚡ Commands:\n• \`exit\` - End session`;
         sendWhatsappMessage(c, phone, message);
         resolve("🔐 SSH is asking for password. Please provide it now.");
         return;
@@ -180,7 +211,7 @@ async function executeInteractiveCommand(
       clearTimeout(outputTimer);
       outputTimer = setTimeout(() => {
         checkForInputRequest(sessionId, phone, c, output, resolve);
-      }, 300); // Wait 300ms after last output for very fast detection
+      }, 500); // Wait 500ms after last output
     });
 
     // Handle stderr
@@ -321,34 +352,49 @@ function checkForInputRequest(
     lowerOutput.includes(indicator),
   );
 
+  const cleanedOutput = cleanOutput(output);
+
   if (
     needsInput ||
-    output.trim().endsWith(":") ||
-    output.trim().endsWith("?") ||
-    output.trim().endsWith("(Y/n)") ||
-    output.trim().endsWith("(y/N)") ||
-    output.trim().endsWith("[Y/n]") ||
-    output.trim().endsWith("[y/N]") ||
-    output.trim().endsWith("(yes/no)") ||
-    output.trim().endsWith("[yes/no]") ||
-    /\b(continue|proceed|install|upgrade|remove)\?\s*$/i.test(output.trim())
+    cleanedOutput.trim().endsWith(":") ||
+    cleanedOutput.trim().endsWith("?") ||
+    cleanedOutput.trim().endsWith("(Y/n)") ||
+    cleanedOutput.trim().endsWith("(y/N)") ||
+    cleanedOutput.trim().endsWith("[Y/n]") ||
+    cleanedOutput.trim().endsWith("[y/N]") ||
+    cleanedOutput.trim().endsWith("(yes/no)") ||
+    cleanedOutput.trim().endsWith("[yes/no]") ||
+    /\b(continue|proceed|install|upgrade|remove)\?\s*$/i.test(
+      cleanedOutput.trim(),
+    ) ||
+    cleanedOutput.includes("$ ") || // Bash prompt detected
+    /.*@.*?:\S*\$ ?$/m.test(cleanedOutput) // SSH prompt pattern
   ) {
     sessionManager.setWaitingForInput(sessionId, true);
 
     // Send current output and ask for input
-    const message = `🖥️ **Interactive Command Output:**\n\`\`\`\n${output}\n\`\`\`\n\n💬 **Waiting for input.** Please send your response.\n\n⚡ Commands:\n• \`exit\` - End session\n• \`sessions\` - Show session info`;
+    let displayOutput = cleanedOutput;
+    // For SSH sessions, only show the last few lines to avoid clutter
+    if (
+      session.command.includes("ssh") &&
+      displayOutput.split("\n").length > 10
+    ) {
+      const lines = displayOutput.split("\n");
+      displayOutput = "...\n" + lines.slice(-8).join("\n");
+    }
+    const message = `🖥️ **Interactive Command Output:**\n\`\`\`\n${displayOutput}\n\`\`\`\n\n💬 **Waiting for input.** Please send your response.\n\n⚡ Commands:\n• \`exit\` - End session\n• \`sessions\` - Show session info`;
 
     sendWhatsappMessage(c, phone, message);
     resolve(
       "🔄 Command is running interactively. Please provide input when requested.",
     );
-  } else if (output.trim()) {
+  } else if (cleanedOutput.trim()) {
     // Command produced output but doesn't seem to need input
     // Wait a bit more to be sure
     setTimeout(() => {
       if (session.process && !session.process.killed) {
         sessionManager.setWaitingForInput(sessionId, true);
-        const message = `🖥️ **Command Output:**\n\`\`\`\n${output}\n\`\`\`\n\n💭 Command may be waiting for input. Send your response or type \`exit\` to end.`;
+        const message = `🖥️ **Command Output:**\n\`\`\`\n${cleanedOutput}\n\`\`\`\n\n💭 Command may be waiting for input. Send your response or type \`exit\` to end.`;
         sendWhatsappMessage(c, phone, message);
       }
       resolve("🔄 Command is running. Output sent separately.");
@@ -408,9 +454,10 @@ async function handleInteractiveInput(
         session.process!.stderr?.removeListener("data", handleOutput);
         sessionManager.endSession(session.phone);
 
-        if (output.trim()) {
+        const cleanedOutput = cleanOutput(output);
+        if (cleanedOutput.trim()) {
           resolve(
-            `✅ Command completed (Exit Code: ${code})\n\n\`\`\`\n${output}\n\`\`\``,
+            `✅ Command completed (Exit Code: ${code})\n\n\`\`\`\n${cleanedOutput}\n\`\`\``,
           );
         } else {
           resolve(`✅ Command completed (Exit Code: ${code})`);
@@ -428,9 +475,10 @@ async function handleInteractiveInput(
         session.process!.stdout?.removeListener("data", handleOutput);
         session.process!.stderr?.removeListener("data", handleOutput);
 
-        if (output.trim()) {
+        const cleanedOutput = cleanOutput(output);
+        if (cleanedOutput.trim()) {
           resolve(
-            `⏰ Input processed. Current output:\n\`\`\`\n${output}\n\`\`\``,
+            `⏰ Input processed. Current output:\n\`\`\`\n${cleanedOutput}\n\`\`\``,
           );
         } else {
           resolve("⏰ Input sent to command. No immediate output.");
