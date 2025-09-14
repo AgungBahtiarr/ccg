@@ -7,13 +7,11 @@ import { env } from "hono/adapter";
 const app = new Hono();
 
 interface WebhookPayload {
-  sender?: {
-    phone?: string;
-    push_name?: string;
+  sender_id?: string;
+  message?: {
+    text?: string;
   };
-  message?: string | { text?: string };
-  phone?: string;
-  push_name?: string;
+  pushname?: string;
 }
 
 // Endpoint untuk menerima webhook dari Gowa
@@ -24,13 +22,9 @@ app.post("/webhook", async (c) => {
   }>(c);
   try {
     const payload = await c.req.json<WebhookPayload>();
-    console.log(payload);
-    const phone = payload.sender?.phone ?? payload.phone;
-    const message =
-      typeof payload.message === "string"
-        ? payload.message
-        : payload.message?.text;
-    const push_name = payload.sender?.push_name ?? payload.push_name ?? "User";
+    const phone = payload.sender_id;
+    const message = payload.message?.text;
+    const push_name = payload.pushname ?? "User";
 
     if (!phone || !message) {
       return c.json(
