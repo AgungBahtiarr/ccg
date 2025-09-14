@@ -221,30 +221,27 @@ async function executeInteractiveCommand(
     // Handle stdout
     childProcess.stdout?.on("data", (data: Buffer) => {
       const chunk = data.toString();
+      output += chunk;
+      hasReceivedOutput = true;
 
-      // Check for SSH login failures first
+      console.log(`Interactive stdout from ${phone}: ${chunk}`);
+
+      // Check for SSH password prompts, but only if no permission denied in recent output
+      const recentOutput = output.slice(-500); // Check last 500 characters
+      const hasPermissionDenied =
+        recentOutput.includes("Permission denied") ||
+        recentOutput.includes("Access denied") ||
+        recentOutput.includes("Authentication failed");
+
       if (
-        chunk.includes("Permission denied") ||
-        chunk.includes("Access denied") ||
-        chunk.includes("Authentication failed") ||
-        chunk.includes("Connection closed by") ||
-        chunk.includes("Host key verification failed") ||
-        chunk.includes("Connection refused") ||
-        chunk.includes("Connection timed out") ||
-        chunk.includes("No route to host")
-      ) {
-        output += chunk;
-        hasReceivedOutput = true;
-        // Don't resolve here, let the exit handler deal with it
-      }
-      // Check for SSH password prompts more aggressively
-      else if (
-        chunk.toLowerCase().includes("password") ||
-        chunk.includes("'s password:") ||
-        /password.*:/i.test(chunk)
+        !hasPermissionDenied &&
+        (chunk.toLowerCase().includes("password") ||
+          chunk.includes("'s password:") ||
+          /password.*:/i.test(chunk)) &&
+        !chunk.includes("Permission denied")
       ) {
         sessionManager.setWaitingForInput(sessionId, true);
-        const cleanedChunk = cleanOutput(output + chunk);
+        const cleanedChunk = cleanOutput(output);
         const message = `🔐 **SSH Password Required**\n\nCommand: \`${command}\`\n\nOutput:\n\`\`\`\n${cleanedChunk}\n\`\`\`\n\n💬 Please send your password now.\n\n⚡ Commands:\n• \`exit\` - End session`;
         if (sessionManager.shouldSendMessage(phone, cleanedChunk)) {
           sendWhatsappMessage(c, phone, message);
@@ -252,18 +249,13 @@ async function executeInteractiveCommand(
         }
         resolve("🔐 SSH is asking for password. Please provide it now.");
         return;
-      } else {
-        output += chunk;
-        hasReceivedOutput = true;
-
-        console.log(`Interactive stdout from ${phone}: ${chunk}`);
-
-        // Reset the timer whenever we receive output
-        clearTimeout(outputTimer);
-        outputTimer = setTimeout(() => {
-          checkForInputRequest(sessionId, phone, c, output, resolve);
-        }, 500); // Wait 500ms after last output
       }
+
+      // Reset the timer whenever we receive output
+      clearTimeout(outputTimer);
+      outputTimer = setTimeout(() => {
+        checkForInputRequest(sessionId, phone, c, output, resolve);
+      }, 500); // Wait 500ms after last output
     });
 
     // Handle stderr
@@ -274,33 +266,16 @@ async function executeInteractiveCommand(
       if (
         !chunk.includes("WARNING: apt does not have a stable CLI interface")
       ) {
-        // Check for SSH connection issues in stderr
-        if (
-          chunk.includes("Permission denied") ||
-          chunk.includes("Access denied") ||
-          chunk.includes("Authentication failed") ||
-          chunk.includes("Connection closed") ||
-          chunk.includes("Host key verification failed") ||
-          chunk.includes("Connection refused") ||
-          chunk.includes("Connection timed out") ||
-          chunk.includes("No route to host") ||
-          chunk.includes("Name or service not known")
-        ) {
-          output += chunk;
-          hasReceivedOutput = true;
-          // Don't resolve here, let the exit handler deal with it
-        } else {
-          output += chunk;
-          hasReceivedOutput = true;
+        output += chunk;
+        hasReceivedOutput = true;
 
-          console.log(`Interactive stderr from ${phone}: ${chunk}`);
+        console.log(`Interactive stderr from ${phone}: ${chunk}`);
 
-          // Reset the timer whenever we receive output
-          clearTimeout(outputTimer);
-          outputTimer = setTimeout(() => {
-            checkForInputRequest(sessionId, phone, c, output, resolve);
-          }, 800);
-        }
+        // Reset the timer whenever we receive output
+        clearTimeout(outputTimer);
+        outputTimer = setTimeout(() => {
+          checkForInputRequest(sessionId, phone, c, output, resolve);
+        }, 800);
       }
     });
 
@@ -392,6 +367,25 @@ function checkForInputRequest(
     return;
   }
 
+  const cleanedOutput = cleanOutput(output);
+
+  // For SSH commands, check for authentication failures first
+  if (session.command.includes("ssh")) {
+    const hasAuthFailure =
+      output.includes("Permission denied") ||
+      output.includes("Access denied") ||
+      output.includes("Authentication failed") ||
+      output.includes("Connection refused") ||
+      output.includes("Connection timed out") ||
+      output.includes("Host key verification failed") ||
+      output.includes("Name or service not known");
+
+    // If we have auth failure, let the exit handler deal with it
+    if (hasAuthFailure) {
+      return;
+    }
+  }
+
   // Check if output indicates waiting for input
   const lowerOutput = output.toLowerCase();
   const inputIndicators = [
@@ -400,7 +394,6 @@ function checkForInputRequest(
     "enter password:",
     "passphrase:",
     "'s password:",
-    "password:",
     "continue?",
     "yes/no",
     "y/n",
@@ -435,11 +428,16 @@ function checkForInputRequest(
     "username:",
   ];
 
-  const needsInput = inputIndicators.some((indicator) =>
+  // Don't check for password prompts if we just had a permission denied
+  const filteredIndicators =
+    session.command.includes("ssh") &&
+    (output.includes("Permission denied") || output.includes("Access denied"))
+      ? inputIndicators.filter((ind) => !ind.includes("password"))
+      : inputIndicators;
+
+  const needsInput = filteredIndicators.some((indicator) =>
     lowerOutput.includes(indicator),
   );
-
-  const cleanedOutput = cleanOutput(output);
 
   if (
     needsInput ||
@@ -454,8 +452,9 @@ function checkForInputRequest(
     /\b(continue|proceed|install|upgrade|remove)\?\s*$/i.test(
       cleanedOutput.trim(),
     ) ||
-    cleanedOutput.includes("$ ") || // Bash prompt detected
-    /.*@.*?:\S*\$ ?$/m.test(cleanedOutput) // SSH prompt pattern
+    (cleanedOutput.includes("$ ") && !session.command.includes("ssh")) || // Bash prompt detected, but not for SSH failures
+    (/.*@.*?:\S*\$ ?$/m.test(cleanedOutput) &&
+      !output.includes("Permission denied")) // SSH prompt pattern, but not after auth failure
   ) {
     sessionManager.setWaitingForInput(sessionId, true);
 
