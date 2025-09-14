@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { executeCommand } from "./handler";
+import { sessionManager } from "./session";
 import { sendWhatsappMessage } from "./whatsapp";
 import { env } from "hono/adapter";
 
@@ -28,7 +29,9 @@ app.post("/webhook", async (c) => {
     const message = payload.message?.text;
     const push_name = payload.pushname ?? "User";
 
-    console.log(`Parsed data: phone=${phone}, message=${message}, push_name=${push_name}`);
+    console.log(
+      `Parsed data: phone=${phone}, message=${message}, push_name=${push_name}`,
+    );
 
     if (!phone || !message) {
       console.error("Validation failed: Phone or message is missing.");
@@ -72,10 +75,8 @@ app.post("/webhook", async (c) => {
     console.log(`Extracted command: ${command}`);
 
     // Proses command secara synchronous
-    console.log(
-      `Executing command from ${push_name} (${phone}): ${command}`,
-    );
-    const result = await executeCommand(command);
+    console.log(`Executing command from ${push_name} (${phone}): ${command}`);
+    const result = await executeCommand(command, phone, c);
     console.log(`Command result: ${result}`);
     await sendWhatsappMessage(c, phone, result);
 
