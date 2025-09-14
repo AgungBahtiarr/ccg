@@ -22,11 +22,16 @@ app.post("/webhook", async (c) => {
   }>(c);
   try {
     const payload = await c.req.json<WebhookPayload>();
+    console.log("Received webhook payload:", JSON.stringify(payload, null, 2));
+
     const phone = payload.sender_id;
     const message = payload.message?.text;
     const push_name = payload.pushname ?? "User";
 
+    console.log(`Parsed data: phone=${phone}, message=${message}, push_name=${push_name}`);
+
     if (!phone || !message) {
+      console.error("Validation failed: Phone or message is missing.");
       return c.json(
         { error: "Invalid payload structure, phone or message is missing" },
         400,
@@ -44,6 +49,7 @@ app.post("/webhook", async (c) => {
     }
 
     // Validasi nomor
+    console.log(`Authorizing number: ${phone} against ${authorizedNumber}`);
     if (phone !== authorizedNumber) {
       console.warn(`Unauthorized attempt from number: ${phone}`);
       // Kirim pesan penolakan secara asynchronous
@@ -54,6 +60,7 @@ app.post("/webhook", async (c) => {
       );
       return c.json({ status: "unauthorized" }, 403);
     }
+    console.log("Authorization successful.");
 
     // Cek apakah pesan adalah command yang valid
     if (!message.startsWith("!")) {
@@ -63,6 +70,7 @@ app.post("/webhook", async (c) => {
 
     // Ekstrak command dari pesan
     const command = message.substring(1);
+    console.log(`Extracted command: ${command}`);
 
     // Proses command secara asynchronous
     c.executionCtx.waitUntil(
@@ -71,6 +79,7 @@ app.post("/webhook", async (c) => {
           `Executing command from ${push_name} (${phone}): ${command}`,
         );
         const result = await executeCommand(command);
+        console.log(`Command result: ${result}`);
         await sendWhatsappMessage(phone, result, gowaApiUrl);
       })(),
     );
