@@ -264,21 +264,48 @@ export async function executeInteractiveCommand(
 
       // For SSH commands with auth failures, check if we should force resolve
       if (command.includes("ssh") && hasAuthFailure) {
-        const attempts = (output.match(/Permission denied/g) || []).length;
-        console.log(`SSH auth failure detected, attempts: ${attempts}`);
-        console.log(`Current output: ${output}`);
+        // Count permission denied attempts more accurately
+        const permissionDeniedMatches =
+          output.match(/Permission denied/g) || [];
+        const passwordPromptMatches = output.match(/password:\s*$/gm) || [];
+        const attempts = Math.max(
+          permissionDeniedMatches.length,
+          passwordPromptMatches.length - 1,
+        );
 
-        // Force resolve after 3 attempts to prevent hanging
-        if (attempts >= 3 && !resolved) {
+        console.log(`SSH auth failure detected, attempts: ${attempts}`);
+        console.log(
+          `Permission denied count: ${permissionDeniedMatches.length}`,
+        );
+        console.log(`Password prompts: ${passwordPromptMatches.length}`);
+        console.log(`Current output: ${JSON.stringify(output)}`);
+
+        // Force resolve after 2 permission denied attempts (3rd prompt means 2 failures)
+        if (attempts >= 2 && !resolved) {
           console.log(
             `Forcing SSH auth failure resolution after ${attempts} attempts`,
           );
           resolved = true;
           sessionManager.endSession(phone);
+
+          // Kill the SSH process
+          if (childProcess && !childProcess.killed) {
+            childProcess.kill("SIGTERM");
+            setTimeout(() => {
+              if (!childProcess.killed) {
+                childProcess.kill("SIGKILL");
+              }
+            }, 1000);
+          }
+
           const cleanedOutput = cleanOutput(output);
-          resolve(
-            `❌ **SSH Authentication Failed**\n\n🔐 **Issue**: Wrong password or username (${attempts} attempts)\n\n💡 **Solutions**:\n- Double-check username: \`${command.split("@")[0].replace("ssh ", "")}\`\n- Verify password is correct\n- Ensure user exists on target system\n- Try: \`!ssh -v ${command.split(" ").slice(1).join(" ")}\` for verbose output\n\n📋 **Details**:\n\`\`\`\n${cleanedOutput}\n\`\`\``,
-          );
+          const errorMessage = `❌ **SSH Authentication Failed**\n\n🔐 **Issue**: Wrong password or username (${attempts} failed attempts)\n\n💡 **Solutions**:\n- Double-check username: \`${command.split("@")[0].replace("ssh ", "")}\`\n- Verify password is correct\n- Ensure user exists on target system\n- Try: \`!ssh -v ${command.split(" ").slice(1).join(" ")}\` for verbose output\n\n📋 **Details**:\n\`\`\`\n${cleanedOutput}\n\`\`\``;
+
+          // Immediately send message to WhatsApp
+          console.log(`Immediately sending SSH failure message to WhatsApp`);
+          sendWhatsappMessage(c, phone, errorMessage);
+
+          resolve(errorMessage);
           return;
         }
         return; // Don't process further, let exit handler manage this
